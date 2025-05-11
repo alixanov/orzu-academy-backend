@@ -11,30 +11,38 @@ const app = express();
 const corsOptions = {
   origin: [
     'https://orzu-academy.vercel.app',
-    'http://localhost:3000'
+    'http://localhost:3000',
   ],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true,
-  optionsSuccessStatus: 200
+  optionsSuccessStatus: 200,
 };
 
-// Middleware
 app.use(cors(corsOptions));
 app.use(express.json());
+
 // MongoDB Connection
-const MONGO_URI = process.env.MONGO_URI || 'mongodb+srv://alixonovshukurullo13:1CSsM3G5oRI1sZUG@cluster0.wdxm5vr.mongodb.net/';
-mongoose.connect(MONGO_URI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-})
+const MONGO_URI = process.env.MONGO_URI || 'mongodb+srv://alixonovshukurullo13:1CSsM3G5oRI1sZUG@cluster0.wdxm5vr.mongodb.net/?retryWrites=true&w=majority';
+
+mongoose
+  .connect(MONGO_URI, {
+    serverSelectionTimeoutMS: 30000, // Increase timeout to 30 seconds
+    socketTimeoutMS: 45000, // Increase socket timeout
+    connectTimeoutMS: 30000, // Increase connection timeout
+  })
   .then(() => console.log('Connected to MongoDB'))
   .catch((err) => console.error('MongoDB connection error:', err));
 
+// Connection event listeners for debugging
+mongoose.connection.on('connected', () => console.log('MongoDB connection established'));
+mongoose.connection.on('disconnected', () => console.log('MongoDB connection disconnected'));
+mongoose.connection.on('error', (err) => console.error('MongoDB connection error:', err));
+
 // User Schema
 const userSchema = new mongoose.Schema({
-  email: { type: String, required: true, unique: true },
-  login: { type: String, required: true, unique: true },
+  email: { type: String, required: true, unique: true, trim: true },
+  login: { type: String, required: true, unique: true, trim: true },
   password: { type: String, required: true },
 });
 
@@ -51,6 +59,14 @@ const Review = mongoose.model('Review', reviewSchema);
 // JWT Secret
 const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret_key';
 
+// Middleware to check MongoDB connection before queries
+const ensureDbConnected = async (req, res, next) => {
+  if (mongoose.connection.readyState !== 1) {
+    return res.status(503).json({ error: 'Database connection not ready, please try again later' });
+  }
+  next();
+};
+
 // Register Route
 app.post('/register', async (req, res) => {
   const { email, login, password } = req.body;
@@ -59,7 +75,7 @@ app.post('/register', async (req, res) => {
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return res.status(400).json({ error: 'To‘g‘ri email manzilini kiriting' });
   }
-  if (!login || login.length < 3) {
+  if (!login || login.trim().length < 3) {
     return res.status(400).json({ error: 'Login kamida 3 belgidan iborat bo‘lishi kerak' });
   }
   if (!password || password.length < 6) {
@@ -102,7 +118,7 @@ app.post('/login', async (req, res) => {
   const { login, password } = req.body;
 
   // Validation
-  if (!login || login.length < 3) {
+  if (!login || login.trim().length < 3) {
     return res.status(400).json({ error: 'Login kamida 3 belgidan iborat bo‘lishi kerak' });
   }
   if (!password || password.length < 6) {
@@ -145,12 +161,13 @@ app.get('/me', async (req, res) => {
     if (!user) return res.status(404).json({ error: 'Foydalanuvchi topilmadi' });
     res.json({ login: user.login, email: user.email });
   } catch (error) {
+    console.error('User info error:', error);
     res.status(401).json({ error: 'Noto‘g‘ri token' });
   }
 });
 
 // Submit Review Route
-app.post('/reviews', async (req, res) => {
+app.post('/reviews', ensureDbConnected, async (req, res) => {
   const { name, text } = req.body;
 
   // Validation
@@ -162,13 +179,6 @@ app.post('/reviews', async (req, res) => {
   }
 
   try {
-    // Optional: Require authentication
-    // const token = req.headers.authorization?.split(' ')[1];
-    // if (!token) return res.status(401).json({ error: 'Token topilmadi' });
-    // const decoded = jwt.verify(token, JWT_SECRET);
-    // const user = await User.findById(decoded.userId);
-    // if (!user) return res.status(404).json({ error: 'Foydalanuvchi topilmadi' });
-
     const review = new Review({
       name: name.trim(),
       text: text.trim(),
@@ -182,9 +192,9 @@ app.post('/reviews', async (req, res) => {
 });
 
 // Get Reviews Route
-app.get('/reviews', async (req, res) => {
+app.get('/reviews', ensureDbConnected, async (req, res) => {
   try {
-    const reviews = await Review.find().sort({ createdAt: -1 }); // Сортировка по убыванию даты
+    const reviews = await Review.find().sort({ createdAt: -1 }).lean();
     res.json(reviews);
   } catch (error) {
     console.error('Error fetching reviews:', error);
@@ -192,9 +202,17 @@ app.get('/reviews', async (req, res) => {
   }
 });
 
-
 // Start Server
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`Сервер запущен на порту ${PORT}`);
+});
+
+// Handle graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received. Closing server...');
+  mongoose.connection.close(() => {
+    console.log('MongoDB connection closed.');
+    process.exit(0);
+  });
 });
